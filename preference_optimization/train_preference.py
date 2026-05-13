@@ -30,6 +30,17 @@ from unsloth.chat_templates import get_chat_template
 SEED = 3407
 
 
+def ensure_trl_warning_state(model) -> None:
+    """Ensure TRL can write trainer warning flags on PEFT/Unsloth models."""
+    for candidate in (
+        model,
+        getattr(model, "base_model", None),
+        getattr(getattr(model, "base_model", None), "model", None),
+    ):
+        if candidate is not None and not hasattr(candidate, "warnings_issued"):
+            candidate.warnings_issued = {}
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Preference tuning (DPO / ORPO) with Unsloth.")
     p.add_argument("--base_model_id", type=str, default="paperbd/smollm_135M_neuraltxt_v1")
@@ -93,6 +104,8 @@ def main() -> None:
     val_dataset = split["test"]
 
     output_dir = f"models/{args.output_model_id}"
+
+    ensure_trl_warning_state(model)
 
     if args.method == "dpo":
         PatchDPOTrainer()
