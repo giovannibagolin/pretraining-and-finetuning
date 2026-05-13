@@ -18,3 +18,9 @@ def patch_trl_optional_dependency_checks() -> None:
     for name, value in vars(import_utils).items():
         if name.endswith("_available") and isinstance(value, tuple):
             setattr(import_utils, name, value[0])
+
+    # DPO/ORPO training here does not use TRL's PairRM judge. If llm-blender is
+    # present in the environment, TRL imports it while loading trainer callbacks;
+    # current llm-blender releases still import Transformers' removed
+    # TRANSFORMERS_CACHE symbol.
+    import_utils._llm_blender_available = False

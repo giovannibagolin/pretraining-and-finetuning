@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import argparse
 
+from unsloth import FastLanguageModel, PatchDPOTrainer, is_bfloat16_supported
+
 try:
     from preference_optimization.trl_compat import patch_trl_optional_dependency_checks
 except ModuleNotFoundError:
@@ -23,7 +25,6 @@ except ModuleNotFoundError:
 
 from datasets import load_dataset
 from transformers import EarlyStoppingCallback
-from unsloth import FastLanguageModel, PatchDPOTrainer, is_bfloat16_supported
 from unsloth.chat_templates import get_chat_template
 
 SEED = 3407
@@ -126,13 +127,13 @@ def main() -> None:
                 eval_steps=50,
                 load_best_model_at_end=True,
                 metric_for_best_model="eval_loss",
+                beta=args.beta,
+                max_length=args.max_seq_length,
+                max_prompt_length=args.max_prompt_length,
             ),
-            beta=args.beta,
             train_dataset=train_dataset,
             eval_dataset=val_dataset,
-            tokenizer=tokenizer,
-            max_length=args.max_seq_length,
-            max_prompt_length=args.max_prompt_length,
+            processing_class=tokenizer,
         )
     else:
         # ORPO
@@ -166,13 +167,13 @@ def main() -> None:
                 eval_steps=50,
                 load_best_model_at_end=True,
                 metric_for_best_model="eval_loss",
+                beta=args.beta,
+                max_length=args.max_seq_length,
+                max_prompt_length=args.max_prompt_length,
             ),
-            beta=args.beta,
             train_dataset=train_dataset,
             eval_dataset=val_dataset,
-            tokenizer=tokenizer,
-            max_length=args.max_seq_length,
-            max_prompt_length=args.max_prompt_length,
+            processing_class=tokenizer,
         )
 
     trainer.add_callback(
