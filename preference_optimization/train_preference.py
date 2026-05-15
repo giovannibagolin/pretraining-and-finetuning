@@ -15,12 +15,20 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import sys
+from pathlib import Path
 
 from unsloth import FastLanguageModel, PatchDPOTrainer, is_bfloat16_supported
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 try:
+    from preference_optimization.chat_formatting import normalize_explicit_preference_example
     from preference_optimization.trl_compat import patch_trl_optional_dependency_checks
 except ModuleNotFoundError:
+    from chat_formatting import normalize_explicit_preference_example
     from trl_compat import patch_trl_optional_dependency_checks
 
 from datasets import load_dataset
@@ -99,6 +107,14 @@ def main() -> None:
     )
 
     dataset = load_dataset(args.dataset, split="train")
+    dataset = dataset.map(
+        normalize_explicit_preference_example,
+        remove_columns=[
+            column
+            for column in dataset.column_names
+            if column not in {"prompt", "chosen", "rejected"}
+        ],
+    )
     split = dataset.train_test_split(test_size=0.02, seed=SEED)
     train_dataset = split["train"]
     val_dataset = split["test"]

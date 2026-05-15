@@ -16,12 +16,20 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
+from pathlib import Path
 
 import torch
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 try:
+    from preference_optimization.chat_formatting import build_reward_conversations
     from preference_optimization.trl_compat import patch_trl_optional_dependency_checks
 except ModuleNotFoundError:
+    from chat_formatting import build_reward_conversations
     from trl_compat import patch_trl_optional_dependency_checks
 
 from datasets import load_dataset
@@ -58,7 +66,7 @@ def parse_args() -> argparse.Namespace:
         "--dataset",
         "-d",
         type=str,
-        default="data/preference_data/train.jsonl",
+        default="paperbd/paper_preference_150K-v1",
         help="Local JSONL file or HF dataset name.",
     )
     p.add_argument("--max_seq_length", type=int, default=1024)
@@ -68,8 +76,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--lora_r", type=int, default=16)
     p.add_argument("--lora_alpha", type=int, default=16)
     p.add_argument("--learning_rate", "-lr", type=float, default=1e-4)
-    p.add_argument("--device", type=str, default=default_device, choices=["auto", "cuda", "mps", "cpu"])
-    p.add_argument("--max_samples", type=int, default=None, help="Cap dataset size for quick tests.")
+    p.add_argument(
+        "--device",
+        type=str,
+        default=default_device,
+        choices=["auto", "cuda", "mps", "cpu"],
+    )
+    p.add_argument(
+        "--max_samples",
+        type=int,
+        default=None,
+        help="Cap dataset size for quick tests.",
+    )
     return p.parse_args()
 
 
@@ -88,43 +106,42 @@ def main() -> None:
 
     # ── Dataset ──────────────────────────────────────────────────────────
 
-    if os.path.isfile(args.dataset):
-        dataset = load_dataset("json", data_files=args.dataset, split="train")
-    else:
-        dataset = load_dataset(args.dataset, split="train")
+    dataset = load_dataset(args.dataset, split="train")
 
     split = dataset.train_test_split(test_size=0.05, seed=SEED)
     train_dataset = split["train"]
     eval_dataset = split["test"]
 
     if args.max_samples is not None:
-        train_dataset = train_dataset.select(range(min(args.max_samples, len(train_dataset))))
-        eval_dataset = eval_dataset.select(range(min(args.max_samples // 10, len(eval_dataset))))
+        train_dataset = train_dataset.select(
+            range(min(args.max_samples, len(train_dataset)))
+        )
+        eval_dataset = eval_dataset.select(
+            range(min(args.max_samples // 10, len(eval_dataset)))
+        )
 
     print(f"Train: {len(train_dataset)}  Eval: {len(eval_dataset)}")
 
-    # ── Pre-tokenize (apply_chat_template returns dict, collator needs list) ──
+    # ── Pre-tokenize (collator expects plain token-id lists) ──────────────
 
     tokenizer = AutoTokenizer.from_pretrained(args.base_model_id)
 
     def pre_tokenize(example):
-        chosen_ids = tokenizer.apply_chat_template(example["chosen"])["input_ids"]
-        rejected_ids = tokenizer.apply_chat_template(example["rejected"])["input_ids"]
+        chosen, rejected = build_reward_conversations(example)
+        chosen_ids = tokenizer.apply_chat_template(
+            chosen,
+            tokenize=True,
+            return_dict=False,
+        )
+        rejected_ids = tokenizer.apply_chat_template(
+            rejected,
+            tokenize=True,
+            return_dict=False,
+        )
         return {"chosen_input_ids": chosen_ids, "rejected_input_ids": rejected_ids}
 
     train_dataset = train_dataset.map(pre_tokenize)
     eval_dataset = eval_dataset.map(pre_tokenize)
-
-    if args.max_seq_length:
-        train_dataset = train_dataset.filter(
-            lambda ex: len(ex["chosen_input_ids"]) <= args.max_seq_length
-            and len(ex["rejected_input_ids"]) <= args.max_seq_length
-        )
-        eval_dataset = eval_dataset.filter(
-            lambda ex: len(ex["chosen_input_ids"]) <= args.max_seq_length
-            and len(ex["rejected_input_ids"]) <= args.max_seq_length
-        )
-        print(f"After max_length filter: Train={len(train_dataset)}  Eval={len(eval_dataset)}")
 
     # ── PEFT config ──────────────────────────────────────────────────────
 
@@ -134,10 +151,6 @@ def main() -> None:
         lora_dropout=0.0,
         bias="none",
         task_type=TaskType.SEQ_CLS,
-        target_modules=[
-            "q_proj", "k_proj", "v_proj", "o_proj",
-            "gate_proj", "up_proj", "down_proj",
-        ],
         modules_to_save=["score"],
     )
 
