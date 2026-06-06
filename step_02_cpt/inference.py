@@ -10,61 +10,76 @@ from rich.progress import track
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from peft import PeftModel
 
-def load_model(model_path, base_model_id="HuggingFaceTB/SmolLM-135M", load_in_4bit=True):
+def load_model(
+    model_path,
+    base_model_id="HuggingFaceTB/SmolLM-135M",
+    load_in_4bit=True,
+    use_unsloth=False,
+):
     """
-    Loads a model using Unsloth (if CUDA) or Standard HF (if not).
-    Ensures tokenizer is configured for left-padding (critical for batch generation).
+    Load a model for inference.
+
+    By default this uses standard Hugging Face Transformers, even on CUDA.
+    Unsloth's fast generation can currently fail on some Colab/T4 + Transformers
+    combinations with batched, left-padded generation, so it is opt-in via
+    --use_unsloth.
     """
     print(f"Loading model from: {model_path}...")
-    
-    if torch.cuda.is_available():
+
+    if torch.cuda.is_available() and use_unsloth:
         from unsloth import FastLanguageModel
         print("🚀 CUDA detected. Using Unsloth.")
-        
-        # Unsloth handles adapters automatically if model_path points to one
+
         model, tokenizer = FastLanguageModel.from_pretrained(
-            model_name = model_path,
-            max_seq_length = 2048,
-            dtype = None,
-            load_in_4bit = load_in_4bit,
+            model_name=model_path,
+            max_seq_length=2048,
+            dtype=None,
+            load_in_4bit=load_in_4bit,
         )
         FastLanguageModel.for_inference(model)
     else:
-        print("🐢 CUDA not detected. Using standard Hugging Face.")
-        
-        device = "mps" if torch.backends.mps.is_available() else "cpu"
-        print(f"Using device: {device}")
+        print("🐢 Using standard Hugging Face Transformers for inference.")
 
-        # 1. Load Tokenizer
+        if torch.cuda.is_available():
+            device_map = "auto"
+            dtype = torch.float16
+        elif torch.backends.mps.is_available():
+            device_map = "mps"
+            dtype = torch.float16
+        else:
+            device_map = "cpu"
+            dtype = torch.float32
+        print(f"Using device_map: {device_map}, dtype: {dtype}")
+
         try:
             tokenizer = AutoTokenizer.from_pretrained(model_path)
-        except:
+        except Exception:
             tokenizer = AutoTokenizer.from_pretrained(base_model_id)
-            
-        # 2. Check if model_path is likely an adapter
+
         is_adapter = os.path.exists(os.path.join(model_path, "adapter_config.json"))
-        
+
         if is_adapter:
             print(f"Found adapter at {model_path}. Loading base model {base_model_id} first...")
             model = AutoModelForCausalLM.from_pretrained(
                 base_model_id,
-                device_map=device,
-                torch_dtype=torch.float16 if device == "mps" else torch.float32
+                device_map=device_map,
+                dtype=dtype,
             )
             model = PeftModel.from_pretrained(model, model_path)
         else:
             print(f"Loading full model from {model_path}...")
             model = AutoModelForCausalLM.from_pretrained(
                 model_path,
-                device_map=device,
-                torch_dtype=torch.float16 if device == "mps" else torch.float32
+                device_map=device_map,
+                dtype=dtype,
             )
-            
-    # CRITICAL: Set padding side to left for decoder-only batch generation
+
+    # CRITICAL: Set padding side to left for decoder-only batch generation.
     tokenizer.padding_side = "left"
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-        
+
+    model.eval()
     return model, tokenizer
 
 def generate_batch(model, tokenizer, prompts, max_new_tokens=64, batch_size=4, repetition_penalty=1.2):
@@ -144,6 +159,11 @@ def main():
     parser.add_argument("--predict_len", type=int, default=50, help="Number of words to predict")
     parser.add_argument("--output_json", type=str, default="inference_generations.json", help="Path to save generations")
     parser.add_argument("--output_results", type=str, default=None, help="If set, run evals and save results to this path")
+    parser.add_argument(
+        "--use_unsloth",
+        action="store_true",
+        help="Use Unsloth for inference on CUDA. Off by default because batched generation can fail on some Colab/T4 setups.",
+    )
     
     args = parser.parse_args()
     console = Console()
@@ -225,7 +245,7 @@ def main():
             
         try:
             # Load
-            model, tokenizer = load_model(model_path, args.base_model)
+            model, tokenizer = load_model(model_path, args.base_model, use_unsloth=args.use_unsloth)
             
             # Generate
             console.print(f"Generating for {len(prompts)} prompts (Batch Size: {args.batch_size})...")
