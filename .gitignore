@@ -21,5 +21,5 @@ data/
 tutorial_notebooks/*
 tutorial_notebooks/*
 *png
-preference_optimization/evals/*
-preference_optimization/diversity_evals/evals/*
+step_04_preference_optimization/evals/*
+step_04_preference_optimization/diversity_evals/evals/*
